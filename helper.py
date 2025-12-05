@@ -1,0 +1,40 @@
+import torch
+from torch import nn
+from inspect import isfunction
+
+def exists(val):
+    return val is not None
+
+def default(val, d):
+    if exists(val):
+        return val
+    return d() if isfunction(d) else d
+
+def cast_tuple(val, depth = 1):
+    return val if isinstance(val, tuple) else (val,) * depth
+
+def init_zero_(layer):
+    nn.init.constant_(layer.weight, 0.)
+    if exists(layer.bias):
+        nn.init.constant_(layer.bias, 0.)
+
+def init_loss_optimizer(model, config):
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay
+    )
+    if config.scheduler == 'cosine':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epoch)
+    elif config.scheduler == 'step':
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=config.step_size, gamma=config.gamma)
+    else:
+        scheduler = None
+
+    batch_losses = []
+    epoch_training_losses = []
+    epoch_validation10_losses = []
+    epoch_validation90_losses = []
+    mse_loss = torch.nn.MSELoss()
+    
+    return optimizer, scheduler, batch_losses, epoch_training_losses, epoch_validation10_losses, epoch_validation90_losses, mse_loss
