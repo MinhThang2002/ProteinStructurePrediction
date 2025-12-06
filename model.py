@@ -12,36 +12,29 @@ class ProteinNet(nn.Module):
                  d_embedding=32,
                  heads = 8,
                  dim_head = 64,
+                 attn_dropout = 0.0,
                  integer_sequence=True,
-                 n_angles=scn.structure.build_info.NUM_ANGLES,
-                 dropout=0.1,
-                 use_positional_encoding=True,
-                 max_len=1024):
+                 n_angles=scn.structure.build_info.NUM_ANGLES):
         
         super(ProteinNet, self).__init__()
         # Dimensionality of RNN hidden state
         self.d_hidden = d_hidden
-        self.use_positional_encoding = use_positional_encoding
-        self.max_len = max_len
-        self.dropout = nn.Dropout(dropout)
       
         self.attn = Attention(dim = dim, 
                                 heads = heads,
                                 dim_head = dim_head,
-                                dropout = dropout)
+                                dropout = attn_dropout)
         # Output vector dimensionality (per amino acid)
         self.d_out = n_angles * 2
         # Output projection layer. (from RNN -> target tensor)
         self.hidden2out = nn.Sequential(
                             nn.Linear(d_embedding, d_hidden),
                             nn.GELU(),
-                            nn.Dropout(dropout),
                             nn.Linear(d_hidden, self.d_out)
                                     )
         self.out2attn = nn.Linear(self.d_out, dim)
         self.final = nn.Sequential(
                             nn.GELU(),
-                            nn.Dropout(dropout),
                             nn.Linear(dim, self.d_out))
         self.norm_0 = nn.LayerNorm([dim])
         self.norm_1 = nn.LayerNorm([dim])
@@ -57,22 +50,9 @@ class ProteinNet(nn.Module):
             self.input_embedding = torch.nn.Embedding(d_in, d_embedding, padding_idx=20)
         else:
             self.input_embedding = torch.nn.Linear(d_in, d_embedding)
-
-    def _sinusoidal_pos_encoding(self, seq_len, dim, device):
-        """Create sinusoidal positional encodings."""
-        position = torch.arange(seq_len, device=device).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, dim, 2, device=device) * (-torch.log(torch.tensor(10000.0)) / dim))
-        pe = torch.zeros(seq_len, dim, device=device)
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        return pe
-
-    def get_lengths(self, sequence, mask=None):
+    def get_lengths(self, sequence):
         """Compute the lengths of each sequence in the batch."""
-        if mask is not None:
-            # Prefer the provided mask (1 for real tokens, 0 for padding)
-            lengths = mask.sum(dim=1)
-        elif self.integer_sequence:
+        if self.integer_sequence:
             lengths = sequence.shape[-1] - (sequence == 20).sum(axis=1)
         else:
             lengths = sequence.shape[1] - (sequence == 0).all(axis=-1).sum(axis=1)
@@ -81,23 +61,23 @@ class ProteinNet(nn.Module):
     def forward(self, sequence, mask=None):
         """Run one forward step of the model."""
         # First, we compute sequence lengths
-        lengths = self.get_lengths(sequence, mask=mask)
-        lengths = torch.clamp(lengths, min=1)  # avoid zero-length packs
-        original_len = sequence.shape[1]
+        lengths = self.get_lengths(sequence)
 
-        # Embed inputs
-        output = self.input_embedding(sequence)
+        # Next, we embed our input tensors for input to the RNN
+        sequence = self.input_embedding(sequence)
 
-        # Add positional encoding if enabled
-        if self.use_positional_encoding:
-            pe_len = min(original_len, self.max_len)
-            pe = self._sinusoidal_pos_encoding(pe_len, output.shape[-1], output.device)
-            pe = pe.unsqueeze(0)  # (1, L, d_embedding)
-            output[:, :pe_len, :] = output[:, :pe_len, :] + pe
-
-        output = self.dropout(output)
-
-        # Linear projection to attention dimension
+        # Then we pass in our data into the RNN via PyTorch's pack_padded_sequences
+        sequence = torch.nn.utils.rnn.pack_padded_sequence(sequence,
+                                                         lengths,
+                                                         batch_first=True,
+                                                         enforce_sorted=False)
+        output, output_lengths = torch.nn.utils.rnn.pad_packed_sequence(sequence,
+                                                                      batch_first=True)
+        # At this point, output has the same dimentionality as the RNN's hidden
+        # state: i.e. (batch, length, d_hidden). 
+      
+        # We use a linear transformation to transform our output tensor into the
+        # correct dimensionality (batch, length, 24)
         output = self.hidden2out(output)
         output = self.out2attn(output)
         output = self.activation_0(output)

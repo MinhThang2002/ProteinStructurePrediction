@@ -19,22 +19,13 @@ def init_zero_(layer):
         nn.init.constant_(layer.bias, 0.)
 
 def init_loss_optimizer(model, config):
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=config.learning_rate,
-        weight_decay=config.weight_decay
-    )
-    if config.scheduler == 'cosine':
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epoch)
-    elif config.scheduler == 'step':
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=config.step_size, gamma=config.gamma)
-    else:
-        scheduler = None
-
+    optimizer = torch.optim.AdamW(model.parameters(),
+                                  lr=config.learning_rate,
+                                  weight_decay=config.weight_decay)
     batch_losses = []
     epoch_training_losses = []
     epoch_validation10_losses = []
     epoch_validation90_losses = []
     mse_loss = torch.nn.MSELoss()
     
-    return optimizer, scheduler, batch_losses, epoch_training_losses, epoch_validation10_losses, epoch_validation90_losses, mse_loss
+    return optimizer, batch_losses, epoch_training_losses, epoch_validation10_losses, epoch_validation90_losses, mse_loss

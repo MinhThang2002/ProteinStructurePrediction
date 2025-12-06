@@ -1,10 +1,11 @@
+import os
+import time
 import torch
-from tqdm.auto import tqdm
+from tqdm import tqdm
 import numpy as np
 import sidechainnet as scn
 from helper import init_loss_optimizer
 import matplotlib.pyplot as plt
-from copy import deepcopy
 
 def validation(model, datasplit, device, loss_fn, mode):
     """Evaluate a model (sequence->sin/cos represented angles [-1,1]) on MSE."""
@@ -19,25 +20,21 @@ def validation(model, datasplit, device, loss_fn, mode):
             elif mode == 'pssms':
                 seqs = batch.seq_evo_sec.to(device)
             mask_ = batch.msks.to(device)
+            angs = batch.angs.to(device)
+            angs[~torch.isfinite(angs)] = 0
+            true_angles_sincosine = scn.structure.trig_transform(angs)
+            mask = (angs.ne(0)).unsqueeze(-1).repeat(1, 1, 1, 2)
 
-            # Drop invalid (NaN) angles from loss; keep only real values at masked positions.
-            angles = torch.nan_to_num(batch.angs, nan=0.0).to(device)
-            angle_mask = torch.isfinite(angles)
-            valid_mask = angle_mask & mask_.unsqueeze(-1)  # shape: (B, L, 12)
+            if mask.sum() == 0:
+                # Skip batches with no valid angle targets.
+                continue
 
-            true_angles_sincosine = scn.structure.trig_transform(angles).to(device)
-            mask = valid_mask.unsqueeze(-1).repeat(1, 1, 1, 2)
-
-            # Make predictions
+            # Make predictions and optimize
             predicted_angles = model(seqs, mask = mask_)
-            # Align lengths defensively in case of padding mismatches on GPU
-            max_len = min(predicted_angles.shape[1], true_angles_sincosine.shape[1], mask.shape[1], mask_.shape[1])
-            predicted_angles = predicted_angles[:, :max_len]
-            true_angles_sincosine = true_angles_sincosine[:, :max_len]
-            mask = mask[:, :max_len]
-
-            mask = mask.to(torch.bool)
+            predicted_angles = torch.nan_to_num(predicted_angles, nan=0.0, posinf=0.0, neginf=0.0)
             loss = loss_fn(predicted_angles[mask], true_angles_sincosine[mask])
+            if not torch.isfinite(loss):
+                continue
             
             total += loss
             n += 1
@@ -45,20 +42,25 @@ def validation(model, datasplit, device, loss_fn, mode):
     return torch.sqrt(total/n)
 
 def train(model, config, dataloader, device):
-    optimizer, scheduler, batch_losses, epoch_training_losses, epoch_validation10_losses, epoch_validation90_losses, mse_loss = init_loss_optimizer(model, config)
-    grad_accum_steps = max(1, config.grad_accum_steps)
-    best_state = None
-    best_val = float('inf')
-    patience_ctr = 0
-
+    optimizer, batch_losses, epoch_training_losses, epoch_validation10_losses, epoch_validation90_losses, mse_loss = init_loss_optimizer(model, config)
+    os.makedirs(config.model_save_path, exist_ok=True)
+    best_metric_file = os.path.join(config.model_save_path, 'best_metric.txt')
+    prev_best_metric = float('inf')
+    if os.path.exists(best_metric_file):
+        try:
+            with open(best_metric_file, 'r') as f:
+                prev_best_metric = float(f.read().strip())
+        except ValueError:
+            prev_best_metric = float('inf')
+    run_best_metric = float('inf')
+    run_best_path = os.path.join(config.model_save_path, 'model_weights_run_best.pth')
+    if os.path.exists(run_best_path):
+        os.remove(run_best_path)
+    final_save_path = None
     for epoch in range(config.epoch):
         print(f'Epoch {epoch}')
-        progress_bar = tqdm(total=len(dataloader['train']),
-                             smoothing=0,
-                             leave=False,
-                             ncols=80)
-        optimizer.zero_grad()
-        for step, batch in enumerate(dataloader['train'], 1):
+        progress_bar = tqdm(total=len(dataloader['train']), smoothing=0)
+        for batch in dataloader['train']:
             # Prepare variables and create a mask of missing angles (padded with zeros)
             # Note the mask is repeated in the last dimension to match the sin/cos represenation.
             if config.mode == 'seqs':
@@ -66,42 +68,34 @@ def train(model, config, dataloader, device):
             elif config.mode == 'pssms':
                 seqs = batch.seq_evo_sec.to(device)
             mask_ = batch.msks.to(device)
+            angs = batch.angs.to(device)
+            angs[~torch.isfinite(angs)] = 0
+            true_angles_sincos = scn.structure.trig_transform(angs)
+            mask = (angs.ne(0)).unsqueeze(-1).repeat(1, 1, 1, 2)
 
-            # Build a per-angle mask that excludes NaNs and padded positions.
-            angles = torch.nan_to_num(batch.angs, nan=0.0).to(device)
-            angle_mask = torch.isfinite(angles)
-            valid_mask = angle_mask & mask_.unsqueeze(-1)  # shape: (B, L, 12)
-
-            true_angles_sincos = scn.structure.trig_transform(angles).to(device)
-            mask = valid_mask.unsqueeze(-1).repeat(1, 1, 1, 2)
+            if mask.sum() == 0:
+                progress_bar.update(1)
+                progress_bar.set_description("\rRMSE Loss = skip")
+                continue
 
             # Make predictions and optimize
             predicted_angles = model(seqs, mask = mask_)
-            max_len = min(predicted_angles.shape[1], true_angles_sincos.shape[1], mask.shape[1], mask_.shape[1])
-            predicted_angles = predicted_angles[:, :max_len]
-            true_angles_sincos = true_angles_sincos[:, :max_len]
-            mask = mask[:, :max_len]
-
-            mask = mask.to(torch.bool)
+            predicted_angles = torch.nan_to_num(predicted_angles, nan=0.0, posinf=0.0, neginf=0.0)
             loss = mse_loss(predicted_angles[mask], true_angles_sincos[mask])
-            loss = loss / grad_accum_steps
+            if not torch.isfinite(loss):
+                progress_bar.update(1)
+                progress_bar.set_description("\rRMSE Loss = nan-skip")
+                optimizer.zero_grad(set_to_none=True)
+                continue
             loss.backward()
-
-            if step % grad_accum_steps == 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 2)
-                optimizer.step()
-                optimizer.zero_grad()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 2)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
 
             # Housekeeping
             batch_losses.append(float(loss))
             progress_bar.update(1)
-        progress_bar.close()
-        # Final step flush if dataset size not divisible by grad_accum_steps
-        if (step % grad_accum_steps) != 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 2)
-            optimizer.step()
-            optimizer.zero_grad()
-
+            progress_bar.set_description(f"\rRMSE Loss = {np.sqrt(float(loss)):.4f}")
         # Evaluate the model's performance on train-eval, downsampled for efficiency
         epoch_training_losses.append(validation(model, 
                                                 dataloader['train-eval'], 
@@ -122,25 +116,36 @@ def train(model, config, dataloader, device):
         print(f"     Train-eval loss = {epoch_training_losses[-1]:.4f}")
         print(f"     Valid-10   loss = {epoch_validation10_losses[-1]:.4f}")
         print(f"     Valid-90   loss = {epoch_validation90_losses[-1]:.4f}")
-
-        # Scheduler step per epoch
-        if scheduler is not None:
-            scheduler.step()
-
-        # Early stopping on valid-10
-        current_val = float(epoch_validation10_losses[-1])
-        if current_val + 1e-6 < best_val:
-            best_val = current_val
-            best_state = deepcopy(model.state_dict())
-            patience_ctr = 0
-        else:
-            patience_ctr += 1
-            if patience_ctr > config.patience:
-                print(f"Early stopping at epoch {epoch} (best valid-10={best_val:.4f})")
-                break
-
+        metric_map = {
+            'train-eval': epoch_training_losses[-1],
+            'valid-10': epoch_validation10_losses[-1],
+            'valid-90': epoch_validation90_losses[-1],
+        }
+        current_metric = metric_map[config.best_metric_split]
+        if current_metric < run_best_metric:
+            run_best_metric = current_metric
+            torch.save(model.state_dict(), run_best_path)
+            print(f"     Updated run-best ({config.best_metric_split}) = {run_best_metric:.4f}")
     # Finally, evaluate the model on the test set
     print(f"Test loss = {validation(model, dataloader['test'], device, mse_loss, config.mode):.4f}")
+    # Decide where to store the run's best checkpoint
+    if run_best_metric < float('inf') and os.path.exists(run_best_path):
+        if run_best_metric < prev_best_metric:
+            final_save_path = os.path.join(config.model_save_path, 'model_weights.pth')
+            os.replace(run_best_path, final_save_path)
+            with open(best_metric_file, 'w') as f:
+                f.write(str(run_best_metric))
+            print(f"Saved new overall best to {final_save_path} (metric {run_best_metric:.4f})")
+        else:
+            fallback_name = f"model_weights_{int(time.time())}.pth"
+            final_save_path = os.path.join(config.model_save_path, fallback_name)
+            os.replace(run_best_path, final_save_path)
+            print(f"Run best {run_best_metric:.4f} did not beat previous {prev_best_metric:.4f}; saved to {final_save_path}")
+    else:
+        fallback_name = f"model_weights_{int(time.time())}.pth"
+        final_save_path = os.path.join(config.model_save_path, fallback_name)
+        torch.save(model.state_dict(), final_save_path)
+        print(f"No validation checkpoints saved; saved current model to {final_save_path}")
     # Plot the loss of each batch over time
     plt.plot(np.sqrt(np.asarray(batch_losses)), label='batch loss')
     plt.ylabel("RMSE")
@@ -160,7 +165,4 @@ def train(model, config, dataloader, device):
     plt.legend()
     plt.savefig('ValidationLoss.png')
     
-    # Restore best checkpoint if available
-    if best_state is not None:
-        model.load_state_dict(best_state)
-    return model
+    return model, final_save_path

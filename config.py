@@ -26,37 +26,33 @@ def get_parameters():
     # Training parameters
     parser.add_argument('-lr', '--learning_rate', dest='learning_rate', default=0.001, type=float,
                         help="Learning Rate.")
-    parser.add_argument('--weight_decay', dest='weight_decay', default=1e-4, type=float,
-                        help="Weight decay (L2 regularization).")
-    parser.add_argument('--scheduler', dest='scheduler', default='cosine', choices=['none', 'cosine', 'step'],
-                        help="Learning rate scheduler type.")
-    parser.add_argument('--step_size', dest='step_size', default=5, type=int,
-                        help="Step size for StepLR.")
-    parser.add_argument('--gamma', dest='gamma', default=0.5, type=float,
-                        help="Decay factor for StepLR.")
-    parser.add_argument('--grad_accum_steps', dest='grad_accum_steps', default=1, type=int,
-                        help="Accumulate gradients over N steps to simulate larger batch.")
-    parser.add_argument('--patience', dest='patience', default=8, type=int,
-                        help="Early stopping patience based on valid-10.")
+    parser.add_argument('--weight_decay', dest='weight_decay', default=0.0, type=float,
+                        help="Weight decay for optimizer.")
     parser.add_argument('-e', '--epoch', type=int, default=10, help="Training Epochs.")
     parser.add_argument('-b', '--batch', dest='batch',type=int, default=4,
                         help="Batch size during each training step.")
     parser.add_argument('-t','--train', type=str2bool, default=False,help="True when train the model, \
                         else used for testing.")
+    parser.add_argument('--num_workers', dest='num_workers', type=int, default=0,
+                        help="Dataloader workers. Use 0 on macOS/Windows to avoid collate pickling issues.")
     parser.add_argument('--mode', type=str, default='pssms', choices=['pssms', 'seqs'],
                         help="Mode of trainig the model. Select the input of model either to be PSSM-Position Specific Scoring Matrix \
                               or Seqs(Protein Sequence)")
-    parser.add_argument('--num_workers', dest='num_workers', type=int, default=0,
-                        help="DataLoader worker processes. Use 0 on macOS to avoid spawn pickling issues.")
-    parser.add_argument('--dropout', dest='dropout', type=float, default=0.1,
-                        help="Dropout rate for attention/MLP.")
-    parser.add_argument('--use_positional_encoding', dest='use_positional_encoding', type=str2bool, default=True,
-                        help="Whether to add sinusoidal positional encodings.")
-    parser.add_argument('--max_len', dest='max_len', type=int, default=1024,
-                        help="Maximum sequence length for positional encoding.")
     # Validation
     parser.add_argument('--idx', type=int, default=0,
                         help="Validation index")
+    parser.add_argument('--complete_structures_only', dest='complete_structures_only',
+                        type=str2bool, default=False,
+                        help="If True, only load proteins without missing residues (useful for clean visualization).")
+    parser.add_argument('--attn_dropout', dest='attn_dropout', default=0.0, type=float,
+                        help="Dropout probability inside attention.")
+    parser.add_argument('--model_load_path', dest='model_load_path', type=str, default=None,
+                        help="Optional path to load existing model_weights.pth for fine-tuning.")
+    parser.add_argument('--save_best', dest='save_best', type=str2bool, default=True,
+                        help="Save checkpoint with best validation metric during training.")
+    parser.add_argument('--best_metric_split', dest='best_metric_split',
+                        choices=['train-eval', 'valid-10', 'valid-90'], default='valid-90',
+                        help="Which split to monitor for best checkpoint.")
 
     # Base Directory
     parser.add_argument('-m', '--model_save_path', type=str, default='./models',
