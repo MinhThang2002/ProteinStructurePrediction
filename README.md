@@ -3,12 +3,23 @@
 Concise guide for setup, training, inference, and evaluation with SidechainNet.
 
 ## Setup
+
+### Create environment and install library:
+
+- python3 -m venv .venv
+- source .venv/bin/activate
 - Python 3.10+, install deps: `pip install -r requirements.txt`
 - Use local data to avoid downloads: `export SCN_DATA_PATH=./sidechainnet_data`
 - On macOS keep `--num_workers 0` (collate pickling).
 
+### Cài torch phù hợp máy bạn, ví dụ CPU:
+
+pip install torch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cpu
+
 ## Train
+
 **Light baseline (PSSM input, CPU-friendly):**
+
 ```bash
 python main.py --train True --mode pssms --integer_sequence False \
   --epoch 10 --batch 4 \
@@ -19,6 +30,7 @@ python main.py --train True --mode pssms --integer_sequence False \
 ```
 
 **Current best config:** HuberLoss + projection dropout, EMA, cosine per-batch, grad accumulation.
+
 ```bash
 python main.py --train True --mode pssms --integer_sequence False \
   --epoch 10 --batch 8 \
@@ -30,9 +42,11 @@ python main.py --train True --mode pssms --integer_sequence False \
   --weight_decay 1e-4 \
   --num_workers 0 --model_save_path ./models
 ```
+
 To continue from the latest checkpoint: add `--model_load_path ./models/model_weights.pth`.
 
 **Sequence-only (reference):**
+
 ```bash
 python main.py --train True --mode seqs --integer_sequence True \
   --epoch 10 --batch 4 \
@@ -42,8 +56,10 @@ python main.py --train True --mode seqs --integer_sequence True \
 ```
 
 ## Inference
+
 - Single sample: set `--idx N` (N ≥ 0).
 - Auto loop idx 0–19: set `--idx -1` (skips any sample that fails due to missing residues).
+
 ```bash
 python main.py --train False --mode pssms --integer_sequence False \
   --model_load_path ./models/model_weights.pth --idx -1 --complete_structures_only True \
@@ -51,10 +67,13 @@ python main.py --train False --mode pssms --integer_sequence False \
   --n_heads 12 --head_dim 64 --attn_dropout 0.1 \
   --batch 8 --num_workers 0
 ```
+
 Outputs: `plots/{idx}_pred.pdb`, `plots/{idx}_true.pdb`, `plots/{idx}_compare.html`.
 
 ## Evaluation
+
 Print RMSE for splits and append to `models/metrics_report.txt`:
+
 ```bash
 python evaluate.py --mode pssms --integer_sequence False \
   --model_load_path ./models/model_weights.pth \
@@ -62,13 +81,16 @@ python evaluate.py --mode pssms --integer_sequence False \
   --n_heads 12 --head_dim 64 --attn_dropout 0.1 \
   --batch 8 --num_workers 0
 ```
+
 If memory is tight, lower `--batch` and/or use `--complete_structures_only True`.
 
 ## Logs
+
 - Best metric: `models/best_metric.txt`
 - Training runs: `models/train_log.txt`
 - Eval summary: `models/metrics_report.txt`
 
 ## Notes
+
 - Loss is SmoothL1 (Huber) on sin/cos targets; RMSE is reported by `validation`.
 - Best checkpoint uses EMA weights if `--ema_decay > 0`.
