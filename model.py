@@ -28,14 +28,16 @@ class ProteinNet(nn.Module):
         self.d_out = n_angles * 2
         # Output projection layer. (from RNN -> target tensor)
         self.hidden2out = nn.Sequential(
-                            nn.Linear(d_embedding, d_hidden),
-                            nn.GELU(),
-                            nn.Linear(d_hidden, self.d_out)
-                                    )
+            nn.Linear(d_embedding, d_hidden),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(d_hidden, self.d_out)
+        )
         self.out2attn = nn.Linear(self.d_out, dim)
         self.final = nn.Sequential(
-                            nn.GELU(),
-                            nn.Linear(dim, self.d_out))
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(dim, self.d_out))
         self.norm_0 = nn.LayerNorm([dim])
         self.norm_1 = nn.LayerNorm([dim])
         self.activation_0 = nn.GELU()

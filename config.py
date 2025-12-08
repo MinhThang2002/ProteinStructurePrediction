@@ -31,6 +31,16 @@ def get_parameters():
     parser.add_argument('-e', '--epoch', type=int, default=10, help="Training Epochs.")
     parser.add_argument('-b', '--batch', dest='batch',type=int, default=4,
                         help="Batch size during each training step.")
+    parser.add_argument('--scheduler', dest='scheduler', choices=['none', 'cosine'], default='none',
+                        help="Learning rate scheduler to use.")
+    parser.add_argument('--scheduler_step', dest='scheduler_step', choices=['epoch', 'batch'], default='epoch',
+                        help="Apply scheduler step per epoch or per batch.")
+    parser.add_argument('--warmup_epochs', dest='warmup_epochs', type=int, default=0,
+                        help="Number of warmup epochs for scheduler.")
+    parser.add_argument('--min_lr', dest='min_lr', type=float, default=0.0,
+                        help="Minimum learning rate for cosine scheduler.")
+    parser.add_argument('--grad_accum_steps', dest='grad_accum_steps', type=int, default=1,
+                        help="Gradient accumulation steps.")
     parser.add_argument('-t','--train', type=str2bool, default=False,help="True when train the model, \
                         else used for testing.")
     parser.add_argument('--num_workers', dest='num_workers', type=int, default=0,
@@ -53,6 +63,8 @@ def get_parameters():
     parser.add_argument('--best_metric_split', dest='best_metric_split',
                         choices=['train-eval', 'valid-10', 'valid-90'], default='valid-90',
                         help="Which split to monitor for best checkpoint.")
+    parser.add_argument('--ema_decay', dest='ema_decay', type=float, default=0.0,
+                        help="EMA decay for model weights (0 disables EMA).")
 
     # Base Directory
     parser.add_argument('-m', '--model_save_path', type=str, default='./models',
