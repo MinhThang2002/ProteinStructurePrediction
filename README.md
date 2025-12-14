@@ -4,17 +4,9 @@ Concise guide for setup, training, inference, and evaluation with SidechainNet.
 
 ## Setup
 
-### Create environment and install library:
-
-- python3 -m venv .venv
-- source .venv/bin/activate
 - Python 3.10+, install deps: `pip install -r requirements.txt`
 - Use local data to avoid downloads: `export SCN_DATA_PATH=./sidechainnet_data`
 - On macOS keep `--num_workers 0` (collate pickling).
-
-### Cài torch phù hợp máy bạn, ví dụ CPU:
-
-pip install torch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cpu
 
 ## Train
 
@@ -83,6 +75,28 @@ python evaluate.py --mode pssms --integer_sequence False \
 ```
 
 If memory is tight, lower `--batch` and/or use `--complete_structures_only True`.
+
+### Load existing checkpoint without retraining
+
+Checkpoint `./models/model_weights.pth` was trained with the config above (`d_hidden=768, dim=384, d_embedding=48, n_heads=12, head_dim=64, attn_dropout=0.1, mode=pssms, integer_seq=False`). Use the same flags to avoid size-mismatch errors:
+
+```bash
+python evaluate.py \
+  --model_load_path ./models/model_weights.pth \
+  --mode pssms --integer_sequence False \
+  --d_hidden 768 --dim 384 --d_embedding 48 \
+  --n_heads 12 --head_dim 64 --attn_dropout 0.1 \
+  --batch 8
+```
+
+Example output on CPU with the checkpoint above:
+
+```
+train-eval RMSE = 0.2553
+valid-10 RMSE = 0.3041
+valid-90 RMSE = 0.2758
+test RMSE = 0.2777
+```
 
 ## Logs
 
