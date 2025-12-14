@@ -41,6 +41,10 @@ def get_parameters():
                         help="Minimum learning rate for cosine scheduler.")
     parser.add_argument('--grad_accum_steps', dest='grad_accum_steps', type=int, default=1,
                         help="Gradient accumulation steps.")
+    parser.add_argument('--max_train_steps', dest='max_train_steps', type=int, default=None,
+                        help="Optional cap on training batches per epoch (useful for quick smoke tests).")
+    parser.add_argument('--max_eval_batches', dest='max_eval_batches', type=int, default=None,
+                        help="Optional cap on validation/test batches (useful for quick smoke tests).")
     parser.add_argument('-t','--train', type=str2bool, default=False,help="True when train the model, \
                         else used for testing.")
     parser.add_argument('--num_workers', dest='num_workers', type=int, default=0,
@@ -57,12 +61,14 @@ def get_parameters():
     parser.add_argument('--attn_dropout', dest='attn_dropout', default=0.0, type=float,
                         help="Dropout probability inside attention.")
     parser.add_argument('--model_load_path', dest='model_load_path', type=str, default=None,
-                        help="Optional path to load existing model_weights.pth for fine-tuning.")
+                        help="Optional path to load an existing checkpoint (defaults to model_weights_best.pth if present).")
     parser.add_argument('--save_best', dest='save_best', type=str2bool, default=True,
                         help="Save checkpoint with best validation metric during training.")
     parser.add_argument('--best_metric_split', dest='best_metric_split',
                         choices=['train-eval', 'valid-10', 'valid-90'], default='valid-90',
                         help="Which split to monitor for best checkpoint.")
+    parser.add_argument('--reset_best_metric', dest='reset_best_metric', type=str2bool, default=False,
+                        help="If True, ignore/delete previous best metric so this run can update model_weights_best.pth.")
     parser.add_argument('--ema_decay', dest='ema_decay', type=float, default=0.0,
                         help="EMA decay for model weights (0 disables EMA).")
 

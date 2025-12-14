@@ -16,9 +16,19 @@ from helper import init_loss_optimizer
 # -------------------------
 def _get_inputs(batch, mode: str, device: torch.device):
     if mode == "seqs":
-        return batch.int_seqs.to(device).long()
+        if hasattr(batch, "int_seqs"):
+            return batch.int_seqs.to(device).long()
+        if hasattr(batch, "seqs_int"):
+            return batch.seqs_int.to(device).long()
+        raise AttributeError("ProteinBatch missing integer sequences (int_seqs/seqs_int) for seqs mode.")
     elif mode == "pssms":
-        return batch.seq_evo_sec.to(device)
+        if hasattr(batch, "seq_evo_sec"):
+            return batch.seq_evo_sec.to(device)
+        if hasattr(batch, "pssm"):
+            return batch.pssm.to(device)
+        if hasattr(batch, "evolutionary"):
+            return batch.evolutionary.to(device)
+        raise AttributeError("ProteinBatch missing PSSM/evolutionary tensors (seq_evo_sec/pssm/evolutionary) for pssms mode.")
     raise ValueError(f"Unsupported mode: {mode}")
 
 
@@ -29,9 +39,9 @@ def _get_targets_and_mask(batch, device: torch.device):
       true_sincos: (B, L, 12, 2) sin/cos targets
       valid_mask: boolean mask (B, L, 12, 2) where angles are not padded (angs != 0)
     """
-    attn_mask = batch.msks.to(device)
+    attn_mask = (batch.msks if hasattr(batch, "msks") else batch.masks).to(device)
 
-    angs = batch.angs.to(device)
+    angs = (batch.angs if hasattr(batch, "angs") else batch.angles).to(device)
     angs[~torch.isfinite(angs)] = 0
 
     true_sincos = scn.structure.trig_transform(angs)
@@ -86,7 +96,7 @@ class EMA:
 # -------------------------
 # Metric: Standard RMSE (global, element-weighted)
 # -------------------------
-def validation(model, datasplit, device, loss_fn, mode):
+def validation(model, datasplit, device, loss_fn, mode, max_batches: Optional[int] = None):
     """
     Standard RMSE over sin/cos targets:
       RMSE = sqrt( mean( (pred - true)^2 ) )
@@ -98,7 +108,9 @@ def validation(model, datasplit, device, loss_fn, mode):
     count = 0
 
     with torch.no_grad():
-        for batch in datasplit:
+        for batch_idx, batch in enumerate(datasplit):
+            if max_batches and batch_idx >= max_batches:
+                break
             x = _get_inputs(batch, mode, device)
             attn_mask, true_sincos, valid_mask = _get_targets_and_mask(batch, device)
 
@@ -123,6 +135,9 @@ def validation(model, datasplit, device, loss_fn, mode):
 # -------------------------
 def train(model, config, dataloader, device):
     steps_per_epoch = len(dataloader["train"])
+    max_train_steps = config.max_train_steps if getattr(config, "max_train_steps", None) else None
+    max_eval_batches = config.max_eval_batches if getattr(config, "max_eval_batches", None) else None
+    effective_steps = min(steps_per_epoch, max_train_steps) if max_train_steps else steps_per_epoch
     accum_steps = max(1, int(config.grad_accum_steps))
 
     optimizer, scheduler, batch_rmses, epoch_train_rmse, epoch_valid10_rmse, epoch_valid90_rmse, loss_fn = init_loss_optimizer(
@@ -133,17 +148,21 @@ def train(model, config, dataloader, device):
 
     best_metric_file = os.path.join(config.model_save_path, "best_metric.txt")
     run_best_path = os.path.join(config.model_save_path, "model_weights_run_best.pth")
+    best_ckpt_path = os.path.join(config.model_save_path, "model_weights_best.pth")
     if os.path.exists(run_best_path):
         os.remove(run_best_path)
 
     # Load previous best metric (overall)
     prev_best = float("inf")
-    if os.path.exists(best_metric_file):
+    if os.path.exists(best_metric_file) and not getattr(config, "reset_best_metric", False):
         try:
             with open(best_metric_file, "r") as f:
                 prev_best = float(f.read().strip())
         except Exception:
             prev_best = float("inf")
+    elif os.path.exists(best_metric_file) and getattr(config, "reset_best_metric", False):
+        os.remove(best_metric_file)
+        print("Resetting previous best metric; will overwrite model_weights_best.pth for this run.")
 
     ema = EMA(getattr(config, "ema_decay", 0.0))
     run_best = float("inf")
@@ -156,9 +175,11 @@ def train(model, config, dataloader, device):
         model.train()
         optimizer.zero_grad(set_to_none=True)
 
-        pbar = tqdm(total=steps_per_epoch, smoothing=0)
+        pbar = tqdm(total=effective_steps, smoothing=0)
 
         for step_idx, batch in enumerate(dataloader["train"]):
+            if max_train_steps and step_idx >= max_train_steps:
+                break
             x = _get_inputs(batch, config.mode, device)
             attn_mask, true_sincos, valid_mask = _get_targets_and_mask(batch, device)
 
@@ -206,9 +227,9 @@ def train(model, config, dataloader, device):
         # Evaluate using EMA weights (if enabled)
         backup = ema.apply_to(model) if ema.enabled() else None
 
-        tr = float(validation(model, dataloader["train-eval"], device, loss_fn, config.mode))
-        v10 = float(validation(model, dataloader["valid-10"], device, loss_fn, config.mode))
-        v90 = float(validation(model, dataloader["valid-90"], device, loss_fn, config.mode))
+        tr = float(validation(model, dataloader["train-eval"], device, loss_fn, config.mode, max_batches=max_eval_batches))
+        v10 = float(validation(model, dataloader["valid-10"], device, loss_fn, config.mode, max_batches=max_eval_batches))
+        v90 = float(validation(model, dataloader["valid-90"], device, loss_fn, config.mode, max_batches=max_eval_batches))
 
         epoch_train_rmse.append(tr)
         epoch_valid10_rmse.append(v10)
@@ -234,25 +255,25 @@ def train(model, config, dataloader, device):
 
     # Test (evaluate with EMA if available)
     backup = ema.apply_to(model) if ema.enabled() else None
-    test_rmse = float(validation(model, dataloader["test"], device, loss_fn, config.mode))
+    test_rmse = float(validation(model, dataloader["test"], device, loss_fn, config.mode, max_batches=max_eval_batches))
     ema.restore(model, backup)
     print(f"Test RMSE = {test_rmse:.4f}")
 
     # Save final checkpoint (overall best logic)
     if run_best < float("inf") and os.path.exists(run_best_path):
         if run_best < prev_best:
-            final_save_path = os.path.join(config.model_save_path, "model_weights.pth")
-            os.replace(run_best_path, final_save_path)
+            final_save_path = best_ckpt_path
+            os.replace(run_best_path, best_ckpt_path)
             with open(best_metric_file, "w") as f:
                 f.write(f"{run_best}\n")
             print(f"Saved new overall best to {final_save_path} (metric {run_best:.4f})")
         else:
-            fallback = os.path.join(config.model_save_path, f"model_weights_{int(time.time())}.pth")
+            fallback = os.path.join(config.model_save_path, f"model_weights_not_best_{int(time.time())}.pth")
             os.replace(run_best_path, fallback)
             final_save_path = fallback
             print(f"Run best {run_best:.4f} did not beat previous {prev_best:.4f}; saved to {final_save_path}")
     else:
-        fallback = os.path.join(config.model_save_path, f"model_weights_{int(time.time())}.pth")
+        fallback = os.path.join(config.model_save_path, f"model_weights_not_best_{int(time.time())}.pth")
         torch.save(model.state_dict(), fallback)
         final_save_path = fallback
         print(f"No validation checkpoints saved; saved current model to {final_save_path}")

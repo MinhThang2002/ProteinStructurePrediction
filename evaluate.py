@@ -11,31 +11,31 @@ from model import ProteinNet
 from trainer import validation
 from config import get_parameters
 
-# Patch collate to handle (L,14,3) coords like main.py
-_orig_pad_for_batch = scn_collate.pad_for_batch
+# Patch collate to handle (L,14,3) coords like main.py (when available)
+_orig_pad_for_batch = getattr(scn_collate, "pad_for_batch", None)
+if _orig_pad_for_batch is None:
+    print("[WARN] sidechainnet.collate.pad_for_batch not found; skipping coord fix patch.")
+else:
+    def _pad_for_batch_with_coord_fix(items, batch_length, dtype="", *args, **kwargs):
+        """Ensure coords are 2D (N, 3) by flattening/repairing before padding."""
+        if dtype == "crd":
+            fixed_items = []
+            max_len = batch_length or 0
+            for item in items:
+                arr = np.asarray(item)
+                if arr.ndim == 3:
+                    arr = arr.reshape(-1, arr.shape[-1])  # (L,14,3) -> (L*14,3)
+                elif arr.ndim == 2 and arr.shape[-1] != 3:
+                    arr = np.zeros((arr.shape[0] * arr.shape[1], 3), dtype=arr.dtype)
+                fixed_items.append(arr)
+                res_len = int(np.ceil(arr.shape[0] / NUM_COORDS_PER_RES))
+                if res_len > max_len:
+                    max_len = res_len
+            batch_length = max_len
+            items = fixed_items
+        return _orig_pad_for_batch(items, batch_length, dtype, *args, **kwargs)
 
-
-def _pad_for_batch_with_coord_fix(items, batch_length, dtype="", *args, **kwargs):
-    """Ensure coords are 2D (N, 3) by flattening/repairing before padding."""
-    if dtype == "crd":
-        fixed_items = []
-        max_len = batch_length or 0
-        for item in items:
-            arr = np.asarray(item)
-            if arr.ndim == 3:
-                arr = arr.reshape(-1, arr.shape[-1])  # (L,14,3) -> (L*14,3)
-            elif arr.ndim == 2 and arr.shape[-1] != 3:
-                arr = np.zeros((arr.shape[0] * arr.shape[1], 3), dtype=arr.dtype)
-            fixed_items.append(arr)
-            res_len = int(np.ceil(arr.shape[0] / NUM_COORDS_PER_RES))
-            if res_len > max_len:
-                max_len = res_len
-        batch_length = max_len
-        items = fixed_items
-    return _orig_pad_for_batch(items, batch_length, dtype, *args, **kwargs)
-
-
-scn_collate.pad_for_batch = _pad_for_batch_with_coord_fix
+    scn_collate.pad_for_batch = _pad_for_batch_with_coord_fix
 
 
 def _maybe_remap_state_dict_for_dropout(state_dict):
@@ -52,6 +52,15 @@ def _maybe_remap_state_dict_for_dropout(state_dict):
         if old in state_dict and new not in state_dict:
             state_dict[new] = state_dict.pop(old)
     return state_dict
+
+
+def _resolve_checkpoint_path(config):
+    """Prefer the best checkpoint if present, else fall back to legacy default or user override."""
+    if config.model_load_path:
+        return config.model_load_path
+    best_default = os.path.join(config.model_save_path, "model_weights_best.pth")
+    legacy_default = os.path.join(config.model_save_path, "model_weights.pth")
+    return best_default if os.path.exists(best_default) else legacy_default
 
 
 def run_eval(config):
@@ -80,7 +89,7 @@ def run_eval(config):
         integer_sequence=config.integer_sequence,
     ).to(device)
 
-    model_path = config.model_load_path or os.path.join(config.model_save_path, "model_weights.pth")
+    model_path = _resolve_checkpoint_path(config)
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Checkpoint not found: {model_path}")
     state = torch.load(model_path, map_location=device)
@@ -100,7 +109,7 @@ def run_eval(config):
 
     results = {}
     for name, key in splits.items():
-        rmse = validation(model, dataloader[key], device, loss_fn, config.mode)
+        rmse = validation(model, dataloader[key], device, loss_fn, config.mode, max_batches=getattr(config, "max_eval_batches", None))
         results[name] = float(rmse)
 
     for name, val in results.items():

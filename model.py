@@ -11,7 +11,7 @@ class SinusoidalPositionalEncoding(nn.Module):
     Adds a deterministic position signal so self-attention can distinguish residue order.
     """
 
-    def __init__(self, d_model: int, max_len: int = 4096):
+    def __init__(self, d_model: int, max_len: int = 8192):
         super().__init__()
         self.d_model = int(d_model)
 
@@ -48,7 +48,7 @@ class ProteinNet(nn.Module):
                  dim_head=64,
                  attn_dropout=0.0,
                  integer_sequence=False,
-                 pos_enc_max_len: int = 4096):
+                 pos_enc_max_len: int = 8192):
         super().__init__()
         self.integer_sequence = integer_sequence
         self.d_embedding = d_embedding
